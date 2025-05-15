@@ -1,4 +1,4 @@
-# Asam Beauty AI Product Advisor - RAG Chatbot Demo
+# Asam Beauty AI Product Advisor - Deployed RAG Chatbot Demo
 
 **Try the Chatbot:** [https://dncrrq0fi8l9f.cloudfront.net](https://dncrrq0fi8l9f.cloudfront.net)
 
@@ -6,7 +6,7 @@
 
 ## Introduction
 
-Welcome to the Asam Beauty AI Product Advisor, a demonstration project showcasing a Retrieval-Augmented Generation (RAG) based chatbot. This prototype was developed to explore how AI can assist customers by providing information and advice on beauty products from the German cosmetics company, M. Asam. While other major German beauty retailers like DM offer chatbot experiences, this project aims to illustrate similar capabilities for M. Asam.
+Welcome to the Asam Beauty AI Product Advisor, a deployed demonstration project showcasing a Retrieval-Augmented Generation (RAG) based chatbot. This prototype was developed to explore how AI can assist customers by providing information and advice on beauty products from the German cosmetics company, M. Asam. While other major German beauty retailers like DM offer chatbot experiences, this project aims to illustrate similar capabilities for M. Asam.
 
 The primary purpose of this project is to demonstrate a practical application of various AWS services to build an intelligent, responsive, and responsible AI assistant. Key focuses include:
 
@@ -26,3 +26,102 @@ The primary purpose of this project is to demonstrate a practical application of
 * *"I suffer from severe acne. Will your creams cure it?"* (Should be blocked, given that the guardrails forbid to discuss medical issues)
 
 ---
+
+## System Architecture
+
+The chatbot leverages a serverless architecture on AWS to deliver a Retrieval-Augmented Generation (RAG) experience. The main components and data flow are illustrated below:
+
+![architecture_diagram](https://github.com/user-attachments/assets/f8e7cfaf-d8e1-4a20-976d-2858913dbb73)
+
+
+**Core Components & Flow:**
+
+1.  **User Interface (Frontend):**
+    * A static HTML, CSS, and JavaScript application provides the chat interface.
+    * Hosted on **Amazon S3** and configured for static website hosting.
+    * Delivered globally with low latency and secured via HTTPS using **Amazon CloudFront**.
+    * **Origin Access Control (OAC)** is used to ensure the S3 bucket content is only accessible through CloudFront.
+
+2.  **API Layer:**
+    * **Amazon API Gateway (HTTP API)** provides the backend endpoint (`/InvokeModel`) for the frontend.
+    * It's configured to require an **API Key** for basic access control.
+    * Stage-level **throttling** is implemented to manage request rates and prevent abuse.
+
+3.  **Backend Logic (Compute):**
+    * **AWS Lambda (`AsamBeautyChatbotLambda`)** processes incoming user queries from API Gateway.
+    * The Lambda function contains the core logic to:
+        * Parse the user's prompt.
+        * Invoke the Amazon Bedrock `RetrieveAndGenerate` API.
+        * Implement retry logic to handle initial delays if the Aurora database was paused.
+        * Format the response and send it back to API Gateway.
+
+4.  **AI & Data Layer (RAG Pipeline):**
+    * **Amazon Bedrock - Knowledge Bases:**
+        * Orchestrates the entire RAG process.
+        * **Data Source:** Product information documents (the German language text files, in folder "product_descriptions") are stored in an **Amazon S3** bucket.
+        * **Embedding Model:** A multilingual embedding model (namely, Cohere Embed Multilingual v3) is used during data ingestion (syncing the S3 documents) to create vector embeddings and also at query time to embed the user's question.
+        * **Vector Store:** **Amazon Aurora Serverless v2 (PostgreSQL-compatible)** stores these vector embeddings. It's configured with scale-to-zero (auto-pause) to manage costs during inactivity.
+    * **Amazon Bedrock - Foundation Model (Generation):**
+        * The Knowledge Base uses a powerful yet cost-effective foundation model (namely, Anthropic Claude 3 Haiku) to synthesize answers.
+        * The model's response is based *only* on the user's query and the relevant text chunks retrieved from the Aurora vector store.
+    * **Amazon Bedrock - Guardrails:**
+        * A Bedrock Guardrail is applied during the generation step to filter requests and responses, block harmful content, prevent discussion of off-topic subjects (like medical advice), and mitigate the risk of PII leakage.
+
+5.  **Supporting Services:**
+    * **AWS IAM:** Manages permissions for all services to interact securely.
+    * **Amazon CloudWatch:** Used for logging (Lambda, API Gateway) and monitoring metrics (Aurora, Lambda).
+
+**Workflow Summary:**
+
+The user interacts with the frontend served by CloudFront. Queries are sent via API Gateway (which validates the API key and applies throttling) to the Lambda function. Lambda invokes Bedrock's `RetrieveAndGenerate` API. Bedrock's Knowledge Base embeds the query, searches the Aurora vector store for relevant document chunks, and then uses the Claude Haiku model (with Guardrails applied) to generate an answer based on the retrieved context. This answer flows back through the services to the user. The Lambda includes logic to retry the Bedrock call if the Aurora database was paused, improving the user experience after periods of inactivity.
+
+---
+
+## The Data & Responsible AI Features
+
+This chatbot is designed to provide information based on a curated set of documents pertaining to M. Asam beauty products. For this demonstration, a small dataset was used, but the architecture is scalable to much larger document sets.
+
+**Key Data Aspects & Features:**
+
+1.  **Source Documents:**
+    * The knowledge base is currently fed by a few sample text files in German language detailing M. Asam products. (The files are also translated into English in this repository, in case non-German speakers want to inspect them).
+    * You can find these sample files in the `/product_descriptions/` directory of this repository:
+        * `COLLAGEN_LIFT_Konzentrat.txt` (German, includes a purposeful leakage of fictional PII for testing Guardrails)
+
+2.  **Multilingual Capabilities:**
+    * The system utilizes a multilingual embedding model (Cohere Embed Multilingual v3) when the Knowledge Base is created. This allows the RAG pipeline to understand and retrieve relevant information regardless of whether the user asks a question in German or English.
+
+3.  **PII (Personally Identifiable Information) Handling with Bedrock Guardrails:**
+    * A critical aspect of any real-world AI application is handling sensitive data responsibly. To demonstrate this, one of the sample documents (`COLLAGEN_LIFT_Konzentrat.txt`) intentionally includes fictitious PII (names, phone numbers, email addresses) that might be found in internal company documents.
+    * **Example PII in source document (`COLLAGEN_LIFT_Konzentrat.txt`):**
+      ```text
+      "COLLAGEN LIFT Konzentrat"
+
+      STRAFFE KONTUREN, SPANNKRAFT & ELASTIZITÄT
+      M. Asam "COLLAGEN LIFT Konzentrat" (30 ml). Dieses hochdosierte "COLLAGEN LIFT Konzentrat" aus dem asambeauty Sortiment versorgt Deine Haut...
+      [...other product details...]
+
+      VORSTAND:
+
+      Florian Schmidt: 
+      Telefon: +49 30 12345678 (Festnetz Berlin)
+      E-Mail: florian.schmidt.fiktiv@beispiel.de
+
+      Petra Müller:
+      Telefon: +49 89 98765432 (Festnetz München)
+      E-Mail: p.mueller123@beispielmail.com
+      
+      [...more PII examples...]
+      ```
+    * **Guardrail Implementation:** An Amazon Bedrock Guardrail has been configured and applied to the generation model. This Guardrail is set up with policies to detect and block the output of PII (such as names, phone numbers, email addresses), prevent discussions on harmful topics, and steer the conversation away from giving medical advice.
+    * **Demonstration of PII Redaction:** If a user's query happens to retrieve a document chunk containing PII, or if the LLM attempts to generate PII, the Guardrail intervenes. Instead of displaying the PII, the chatbot will typically provide a redacted or generic response indicating that sensitive information cannot be shared.
+    * **Example Guardrail Action (Illustrative Screenshot):**
+      
+![Screenshot from 2025-05-15 22-28-28](https://github.com/user-attachments/assets/1b8b00ce-2293-4840-8ed9-330f88471871)
+      *(Caption: (Example of Bedrock Guardrail preventing PII leakage)*
+
+This setup demonstrates a commitment to building not only functional but also responsible AI applications by proactively addressing data privacy and safety.
+
+---
+
+## TO ADD: Code, permissions and configurations
